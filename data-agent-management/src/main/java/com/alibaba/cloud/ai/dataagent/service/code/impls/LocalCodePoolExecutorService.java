@@ -208,6 +208,7 @@ public class LocalCodePoolExecutorService extends AbstractCodePoolExecutorServic
 		if (pathEnv == null)
 			return null;
 
+		pathEnv=pathEnv.replaceAll("\"","");
 		String[] pathDirs = pathEnv.split(File.pathSeparator);
 		boolean isWindows = System.getProperty("os.name").toLowerCase().contains("win");
 

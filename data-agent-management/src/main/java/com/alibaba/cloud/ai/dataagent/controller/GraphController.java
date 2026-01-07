@@ -32,6 +32,26 @@ import static com.alibaba.cloud.ai.dataagent.constant.Constant.STREAM_EVENT_COMP
 import static com.alibaba.cloud.ai.dataagent.constant.Constant.STREAM_EVENT_ERROR;
 
 /**
+ * Graph 流式执行入口（核心运行接口）。
+ *
+ * <p>
+ * 这个 Controller 是“智能体运行时”的主要入口：前端在运行页面发起一次 NL2SQL/数据分析请求时，
+ * 会调用 {@code /api/stream/search} 建立 SSE（text/event-stream）长连接，后端边执行工作流边推送节点输出。
+ * </p>
+ *
+ * <p>
+ * 架构位置：Controller（HTTP/SSE） → {@link com.alibaba.cloud.ai.dataagent.service.graph.GraphService}
+ * → Spring AI Graph（StateGraph/CompiledGraph）→ 各 Node（Planner/SQL/Python/Report 等）。
+ * </p>
+ *
+ * <p>
+ * 关键概念：
+ * - threadId：一次“会话/执行线程”的标识，用于断线重连、人工反馈恢复执行等场景
+ * - humanFeedback / humanFeedbackContent：计划人工审核（HumanFeedbackNode）开关与反馈内容
+ * - nl2sqlOnly：仅生成 SQL，不跑完整计划
+ * - plainReport：报告输出为 Markdown（否则输出为 HTML 模板包裹的 Markdown 渲染页）
+ * </p>
+ *
  * @author zhangshenghang
  * @author vlsmb
  */
@@ -52,6 +72,7 @@ public class GraphController {
 			@RequestParam(value = "rejectedPlan", required = false) boolean rejectedPlan,
 			@RequestParam(value = "nl2sqlOnly", required = false) boolean nl2sqlOnly,
 			@RequestParam(value = "plainReport", required = false) boolean plainReport, HttpServletResponse response) {
+		// 说明：这是 SSE 接口，浏览器端会以 EventSource 方式订阅；连接不会立即结束，而是持续推送节点事件。
 		// Set SSE-related HTTP headers
 		response.setCharacterEncoding("UTF-8");
 		response.setContentType("text/event-stream");
@@ -60,8 +81,10 @@ public class GraphController {
 		response.setHeader("Access-Control-Allow-Origin", "*");
 		response.setHeader("Access-Control-Allow-Headers", "Cache-Control");
 
+		// 使用单播 sink：一个请求对应一个 SSE 流；GraphService 会往 sink 中持续 emit 节点输出事件
 		Sinks.Many<ServerSentEvent<GraphNodeResponse>> sink = Sinks.many().unicast().onBackpressureBuffer();
 
+		// 将请求参数收敛成 GraphRequest DTO，方便 service 层统一处理
 		GraphRequest request = GraphRequest.builder()
 			.agentId(agentId)
 			.threadId(threadId)

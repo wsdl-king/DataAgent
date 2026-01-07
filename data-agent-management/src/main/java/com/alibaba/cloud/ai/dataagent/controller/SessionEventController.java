@@ -38,9 +38,25 @@ public class SessionEventController {
 
 	private final SessionEventPublisher sessionEventPublisher;
 
+	/**
+	 * 会话事件推送流（SSE）。
+	 *
+	 * <p>
+	 * 用途：把“会话列表的增量变化”实时推送给前端（目前主要是会话标题 title-updated）。
+	 * 前端侧通常在左侧会话列表（sidebar）里建立 EventSource 连接，收到事件后更新 UI。
+	 * </p>
+	 *
+	 * <p>
+	 * 事件来源：{@link com.alibaba.cloud.ai.dataagent.service.chat.SessionTitleService} 在后台异步生成标题，
+	 * 保存数据库后调用 {@link com.alibaba.cloud.ai.dataagent.service.chat.SessionEventPublisher} 发布事件。
+	 * </p>
+	 *
+	 * @param agentId 智能体 ID（按 agent 维度隔离推送流：不同 agent 的会话更新互不影响）
+	 */
 	@GetMapping(value = "/agent/{agentId}/sessions/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
 	public Flux<ServerSentEvent<SessionUpdateEvent>> streamSessionUpdates(@PathVariable Integer agentId,
 			HttpServletResponse response) {
+		// SSE 标准响应头：不缓存、保持长连接；浏览器端用 EventSource 自动处理重连
 		response.setCharacterEncoding("UTF-8");
 		response.setContentType("text/event-stream");
 		response.setHeader("Cache-Control", "no-cache");

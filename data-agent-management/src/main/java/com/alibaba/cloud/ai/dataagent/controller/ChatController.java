@@ -32,7 +32,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Chat Controller
+ * 会话与消息管理（非 Graph 运行时）。
+ *
+ * <p>
+ * 这个 Controller 管“会话/消息的持久化与基础操作”，用于支撑前端聊天 UI：
+ * - 会话列表：创建/删除/清空、置顶、重命名
+ * - 消息列表：查询与保存
+ * </p>
+ *
+ * <p>
+ * 注意：真正的“智能体执行/推理/SQL&Python&报告生成”不在这里，而在 {@link GraphController} 的 SSE 流里。
+ * ChatController 只负责把聊天内容存起来，并在需要时触发后台任务（例如：异步生成会话标题）。
+ * </p>
  */
 @Slf4j
 @RestController
@@ -48,7 +59,7 @@ public class ChatController {
 	private final SessionTitleService sessionTitleService;
 
 	/**
-	 * Get session list for an agent
+	 * 获取某个智能体下的会话列表（左侧 sidebar 列表数据源）。
 	 */
 	@GetMapping("/agent/{id}/sessions")
 	public ResponseEntity<List<ChatSession>> getAgentSessions(@PathVariable(value = "id") Integer id) {
@@ -57,7 +68,11 @@ public class ChatController {
 	}
 
 	/**
-	 * Create a new session
+	 * 创建新会话。
+	 *
+	 * <p>
+	 * 前端一般先创建会话，再开始向该会话写入消息（并在运行时发起 Graph 流式请求）。
+	 * </p>
 	 */
 	@PostMapping("/agent/{id}/sessions")
 	public ResponseEntity<ChatSession> createSession(@PathVariable(value = "id") Integer id,
@@ -79,7 +94,7 @@ public class ChatController {
 	}
 
 	/**
-	 * Get message list for a session
+	 * 获取指定会话的消息列表（聊天窗口历史消息）。
 	 */
 	@GetMapping("/sessions/{sessionId}/messages")
 	public ResponseEntity<List<ChatMessage>> getSessionMessages(@PathVariable(value = "sessionId") String sessionId) {
@@ -88,7 +103,13 @@ public class ChatController {
 	}
 
 	/**
-	 * Save message to session
+	 * 保存一条消息到会话。
+	 *
+	 * <p>
+	 * 关键副作用：
+	 * - 更新会话最后活跃时间（用于排序/最近会话）
+	 * - 当 titleNeeded=true 时，异步触发“会话标题生成”（生成后通过 SessionEvent SSE 推送到其他窗口）
+	 * </p>
 	 */
 	@PostMapping("/sessions/{sessionId}/messages")
 	public ResponseEntity<ChatMessage> saveMessage(@PathVariable(value = "sessionId") String sessionId,
@@ -111,6 +132,7 @@ public class ChatController {
 			chatSessionService.updateSessionTime(sessionId);
 
 			if (request.isTitleNeeded()) {
+				// 异步生成标题：不阻塞本次消息保存；生成后会 publish title-updated 事件推送给前端
 				sessionTitleService.scheduleTitleGeneration(sessionId, message.getContent());
 			}
 

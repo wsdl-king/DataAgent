@@ -113,137 +113,285 @@ public class DataAgentConfiguration implements DisposableBean {
 	public StateGraph nl2sqlGraph(NodeBeanUtil nodeBeanUtil, CodeExecutorProperties codeExecutorProperties)
 			throws GraphStateException {
 
+		// ========================================================================
+		// KeyStrategyFactory: 状态更新策略工厂
+		// ========================================================================
+		// 作用：定义 OverAllState 中每个 key 的状态更新策略
+		//
+		// 为什么需要这个配置？
+		// 1. 控制状态更新行为：当节点返回 Map 更新 state 时，决定如何合并新值
+		// 2. 避免数据污染：防止节点意外覆盖重要的状态数据
+		// 3. 明确数据语义：明确每个 key 的数据特性（是否可替换、是否可累加等）
+		//
+		// KeyStrategy.REPLACE 的含义：
+		// - 当节点返回包含该 key 的 Map 时，新值会完全替换旧值
+		// - 例如：SQL_GENERATE_OUTPUT = "SELECT * FROM users"
+		//   如果后续节点再次返回 SQL_GENERATE_OUTPUT = "SELECT * FROM orders"
+		//   则 state[SQL_GENERATE_OUTPUT] 会被替换为新的 SQL，旧值丢失
+		//
+		// 为什么所有 key 都使用 REPLACE？
+		// - 在这个项目中，每个节点的输出都是独立的，不应该累加
+		// - 例如：如果 SQL 生成失败重试，应该用新的 SQL 替换旧的，而不是追加
+		// - 如果需要保留历史，会使用其他 key（如 SQL_EXECUTE_NODE_OUTPUT 按步骤存储）
+		// ========================================================================
 		KeyStrategyFactory keyStrategyFactory = () -> {
 			HashMap<String, KeyStrategy> keyStrategyHashMap = new HashMap<>();
-			// User input
+
+			// ==================== 用户输入与控制参数 ====================
+			// 用户输入的原始查询
 			keyStrategyHashMap.put(INPUT_KEY, KeyStrategy.REPLACE);
-			// Agent ID
+			// Agent ID：标识当前使用的智能体
 			keyStrategyHashMap.put(AGENT_ID, KeyStrategy.REPLACE);
-			// Multi-turn context
+			// 多轮对话上下文：用于多轮对话场景，包含历史对话信息
 			keyStrategyHashMap.put(MULTI_TURN_CONTEXT, KeyStrategy.REPLACE);
-			// Intent recognition
+
+			// ==================== 第一阶段：意图识别与查询增强 ====================
+			// 意图识别节点输出：判断是否需要数据分析
 			keyStrategyHashMap.put(INTENT_RECOGNITION_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// QUERY_ENHANCE_NODE节点输出
+			// 查询增强节点输出：增强后的用户查询
 			keyStrategyHashMap.put(QUERY_ENHANCE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Semantic model
+			// 语义模型提示词：用于SQL生成的语义上下文
 			keyStrategyHashMap.put(GENEGRATED_SEMANTIC_MODEL_PROMPT, KeyStrategy.REPLACE);
-			// EVIDENCE节点输出
+
+			// ==================== 第二阶段：证据召回与Schema检索 ====================
+			// 证据召回节点输出：从向量数据库检索到的业务知识和术语
 			keyStrategyHashMap.put(EVIDENCE, KeyStrategy.REPLACE);
-			// schema recall节点输出
+			// Schema 召回节点输出：召回的表文档
 			keyStrategyHashMap.put(TABLE_DOCUMENTS_FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
+			// Schema 召回节点输出：召回的列文档
 			keyStrategyHashMap.put(COLUMN_DOCUMENTS__FOR_SCHEMA_OUTPUT, KeyStrategy.REPLACE);
-			// table relation节点输出
+
+			// ==================== 第三阶段：表关系构建 ====================
+			// 表关系节点输出：构建好的表关系 Schema（包含主外键关系）
 			keyStrategyHashMap.put(TABLE_RELATION_OUTPUT, KeyStrategy.REPLACE);
+			// 表关系节点异常输出：构建失败时的异常信息
 			keyStrategyHashMap.put(TABLE_RELATION_EXCEPTION_OUTPUT, KeyStrategy.REPLACE);
+			// 表关系重试计数：记录重试次数，用于防止无限重试
 			keyStrategyHashMap.put(TABLE_RELATION_RETRY_COUNT, KeyStrategy.REPLACE);
+			// 数据库方言类型：MySQL、PostgreSQL 等
 			keyStrategyHashMap.put(DB_DIALECT_TYPE, KeyStrategy.REPLACE);
-			// Feasibility Assessment 节点输出
+
+			// ==================== 第四阶段：可行性评估 ====================
+			// 可行性评估节点输出：评估查询是否可以在当前数据库上执行
 			keyStrategyHashMap.put(FEASIBILITY_ASSESSMENT_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// sql generate节点输出
-			keyStrategyHashMap.put(SQL_GENERATE_SCHEMA_MISSING_ADVICE, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
-			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
-			// Semantic consistence节点输出
-			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Planner 节点输出
+
+			// ==================== 第五阶段：计划生成与执行 ====================
+			// 计划生成节点输出：包含所有执行步骤的 JSON 格式计划
 			keyStrategyHashMap.put(PLANNER_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// PlanExecutorNode
+			// 计划执行相关：当前执行的步骤编号（从1开始）
 			keyStrategyHashMap.put(PLAN_CURRENT_STEP, KeyStrategy.REPLACE);
+			// 计划执行相关：下一个要执行的节点名称
 			keyStrategyHashMap.put(PLAN_NEXT_NODE, KeyStrategy.REPLACE);
+			// 计划执行相关：计划验证状态（true/false）
 			keyStrategyHashMap.put(PLAN_VALIDATION_STATUS, KeyStrategy.REPLACE);
+			// 计划执行相关：计划验证错误信息（用于重新生成计划）
 			keyStrategyHashMap.put(PLAN_VALIDATION_ERROR, KeyStrategy.REPLACE);
+			// 计划执行相关：计划修复计数（最多重试3次）
 			keyStrategyHashMap.put(PLAN_REPAIR_COUNT, KeyStrategy.REPLACE);
-			// SQL Execute 节点输出
+
+			// ==================== 第六阶段：SQL 生成与执行 ====================
+			// SQL 生成相关：Schema 缺失建议（当需要的表不存在时的提示）
+			keyStrategyHashMap.put(SQL_GENERATE_SCHEMA_MISSING_ADVICE, KeyStrategy.REPLACE);
+			// SQL 生成节点输出：生成的 SQL 语句
+			keyStrategyHashMap.put(SQL_GENERATE_OUTPUT, KeyStrategy.REPLACE);
+			// SQL 生成相关：SQL 生成重试计数
+			keyStrategyHashMap.put(SQL_GENERATE_COUNT, KeyStrategy.REPLACE);
+			// SQL 生成相关：SQL 重新生成的原因（语义错误、执行失败等）
+			keyStrategyHashMap.put(SQL_REGENERATE_REASON, KeyStrategy.REPLACE);
+			// 语义一致性节点输出：语义一致性检查结果（true/false）
+			keyStrategyHashMap.put(SEMANTIC_CONSISTENCY_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// SQL 执行节点输出：SQL 执行结果（按步骤存储，格式：{"step_1": "结果1", "step_2": "结果2"}）
 			keyStrategyHashMap.put(SQL_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// Python代码运行相关
+
+			// ==================== 第七阶段：Python 分析与报告 ====================
+			// SQL 结果内存：存储 SQL 查询结果的原始数据列表（供 Python 节点使用）
 			keyStrategyHashMap.put(SQL_RESULT_LIST_MEMORY, KeyStrategy.REPLACE);
+			// Python 执行相关：Python 代码执行是否成功
 			keyStrategyHashMap.put(PYTHON_IS_SUCCESS, KeyStrategy.REPLACE);
+			// Python 执行相关：Python 执行重试计数
 			keyStrategyHashMap.put(PYTHON_TRIES_COUNT, KeyStrategy.REPLACE);
+			// Python 执行相关：是否进入降级模式（超过最大重试次数后）
 			keyStrategyHashMap.put(PYTHON_FALLBACK_MODE, KeyStrategy.REPLACE);
+			// Python 执行节点输出：Python 代码执行结果
 			keyStrategyHashMap.put(PYTHON_EXECUTE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Python 生成节点输出：生成的 Python 代码
 			keyStrategyHashMap.put(PYTHON_GENERATE_NODE_OUTPUT, KeyStrategy.REPLACE);
+			// Python 分析节点输出：Python 结果分析输出
 			keyStrategyHashMap.put(PYTHON_ANALYSIS_NODE_OUTPUT, KeyStrategy.REPLACE);
-			// NL2SQL相关
+
+			// ==================== 模式控制 ====================
+			// 是否仅为 NL2SQL 模式（不执行完整计划，只生成 SQL）
 			keyStrategyHashMap.put(IS_ONLY_NL2SQL, KeyStrategy.REPLACE);
-			// Human Review keys
+
+			// ==================== 人工反馈机制 ====================
+			// 是否启用人工审核：true 表示在计划生成后等待人工审核
 			keyStrategyHashMap.put(HUMAN_REVIEW_ENABLED, KeyStrategy.REPLACE);
+			// 人工反馈数据：包含用户是否批准计划、反馈意见等
 			keyStrategyHashMap.put(HUMAN_FEEDBACK_DATA, KeyStrategy.REPLACE);
-			// Final result
+
+			// ==================== 最终结果 ====================
+			// 最终结果：报告生成节点的输出（HTML/Markdown 格式的报告）
 			keyStrategyHashMap.put(RESULT, KeyStrategy.REPLACE);
+
 			return keyStrategyHashMap;
 		};
 
+		// ========================================================================
+		// 创建 StateGraph 状态图，定义整个工作流的节点和边的连接关系
+		// ========================================================================
 		StateGraph stateGraph = new StateGraph(NL2SQL_GRAPH_NAME, keyStrategyFactory)
+			// ==================== 第一阶段：意图识别与查询增强 ====================
+			// 意图识别节点：判断用户查询是否需要数据分析，还是普通对话
 			.addNode(INTENT_RECOGNITION_NODE, nodeBeanUtil.getNodeBeanAsync(IntentRecognitionNode.class))
+			// 证据召回节点：从向量数据库中检索相关的业务知识和术语
 			.addNode(EVIDENCE_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(EvidenceRecallNode.class))
+			// 查询增强节点：基于检索到的证据，增强用户查询的准确性
 			.addNode(QUERY_ENHANCE_NODE, nodeBeanUtil.getNodeBeanAsync(QueryEnhanceNode.class))
+			
+			// ==================== 第二阶段：Schema 召回与关系构建 ====================
+			// Schema 召回节点：从业务数据库中召回相关的表结构信息
 			.addNode(SCHEMA_RECALL_NODE, nodeBeanUtil.getNodeBeanAsync(SchemaRecallNode.class))
+			// 表关系节点：分析并构建表之间的关联关系（主外键关系）
 			.addNode(TABLE_RELATION_NODE, nodeBeanUtil.getNodeBeanAsync(TableRelationNode.class))
+			// 可行性评估节点：评估用户查询是否可以在当前数据库上执行
 			.addNode(FEASIBILITY_ASSESSMENT_NODE, nodeBeanUtil.getNodeBeanAsync(FeasibilityAssessmentNode.class))
-			.addNode(SQL_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlGenerateNode.class))
+			
+			// ==================== 第三阶段：计划生成与执行 ====================
+			// 计划生成节点：生成多步骤的执行计划（可能包含多个 SQL、Python、报告步骤）
 			.addNode(PLANNER_NODE, nodeBeanUtil.getNodeBeanAsync(PlannerNode.class))
+			// 计划执行节点：负责验证计划并决定下一个要执行的步骤类型
 			.addNode(PLAN_EXECUTOR_NODE, nodeBeanUtil.getNodeBeanAsync(PlanExecutorNode.class))
-			.addNode(SQL_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlExecuteNode.class))
-			.addNode(PYTHON_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonGenerateNode.class))
-			.addNode(PYTHON_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonExecuteNode.class))
-			.addNode(PYTHON_ANALYZE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonAnalyzeNode.class))
-			.addNode(REPORT_GENERATOR_NODE, nodeBeanUtil.getNodeBeanAsync(ReportGeneratorNode.class))
+			
+			// ==================== 第四阶段：SQL 生成与执行 ====================
+			// SQL 生成节点：根据用户查询、Schema、证据等信息生成 SQL 语句
+			.addNode(SQL_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlGenerateNode.class))
+			// 语义一致性节点：校验生成的 SQL 是否与用户意图一致，是否存在幻觉字段等
+			// 作用：1. 检查 SQL 是否查询了正确的表和字段
+			//      2. 验证 WHERE 条件是否正确
+			//      3. 检查聚合函数是否符合要求
+			//      4. 检测是否存在 Schema 中不存在的幻觉字段
+			//      5. 验证 SQL 语法是否符合数据库方言
 			.addNode(SEMANTIC_CONSISTENCY_NODE, nodeBeanUtil.getNodeBeanAsync(SemanticConsistencyNode.class))
+			// SQL 执行节点：执行 SQL 查询并返回结果
+			.addNode(SQL_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(SqlExecuteNode.class))
+			
+			// ==================== 第五阶段：Python 分析与报告 ====================
+			// Python 代码生成节点：基于 SQL 查询结果生成 Python 分析代码
+			.addNode(PYTHON_GENERATE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonGenerateNode.class))
+			// Python 代码执行节点：在 Docker 或本地环境中执行 Python 代码
+			.addNode(PYTHON_EXECUTE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonExecuteNode.class))
+			// Python 结果分析节点：分析 Python 执行结果，提取关键信息
+			.addNode(PYTHON_ANALYZE_NODE, nodeBeanUtil.getNodeBeanAsync(PythonAnalyzeNode.class))
+			// 报告生成节点：将所有步骤的执行结果汇总为 HTML/Markdown 报告
+			.addNode(REPORT_GENERATOR_NODE, nodeBeanUtil.getNodeBeanAsync(ReportGeneratorNode.class))
+			
+			// ==================== 人工反馈机制 ====================
+			// 人工反馈节点：支持用户在计划生成后进行人工审核和干预
 			.addNode(HUMAN_FEEDBACK_NODE, nodeBeanUtil.getNodeBeanAsync(HumanFeedbackNode.class));
 
+		// ========================================================================
+		// 定义节点之间的边（连接关系）和执行流程
+		// ========================================================================
+		
+		// 工作流入口：从 START 开始，首先进入意图识别节点
 		stateGraph.addEdge(START, INTENT_RECOGNITION_NODE)
+			// 意图识别节点后的路由：
+			// - 如果需要数据分析 → EVIDENCE_RECALL_NODE（证据召回）
+			// - 如果不需要 → END（结束）
 			.addConditionalEdges(INTENT_RECOGNITION_NODE, edge_async(new IntentRecognitionDispatcher()),
 					Map.of(EVIDENCE_RECALL_NODE, EVIDENCE_RECALL_NODE, END, END))
+			
+			// 证据召回 → 查询增强（顺序执行）
 			.addEdge(EVIDENCE_RECALL_NODE, QUERY_ENHANCE_NODE)
+			// 查询增强后的路由：
+			// - 增强成功 → SCHEMA_RECALL_NODE（Schema 召回）
+			// - 增强失败 → END
 			.addConditionalEdges(QUERY_ENHANCE_NODE, edge_async(new QueryEnhanceDispatcher()),
 					Map.of(SCHEMA_RECALL_NODE, SCHEMA_RECALL_NODE, END, END))
+			// Schema 召回后的路由：
+			// - 召回成功 → TABLE_RELATION_NODE（表关系构建）
+			// - 召回失败 → END
 			.addConditionalEdges(SCHEMA_RECALL_NODE, edge_async(new SchemaRecallDispatcher()),
 					Map.of(TABLE_RELATION_NODE, TABLE_RELATION_NODE, END, END))
 
+			// 表关系节点后的路由（支持重试）：
+			// - 关系构建成功 → FEASIBILITY_ASSESSMENT_NODE（可行性评估）
+			// - 关系构建失败 → 重试 TABLE_RELATION_NODE 或 END
 			.addConditionalEdges(TABLE_RELATION_NODE, edge_async(new TableRelationDispatcher()),
 					Map.of(FEASIBILITY_ASSESSMENT_NODE, FEASIBILITY_ASSESSMENT_NODE, END, END, TABLE_RELATION_NODE,
-							TABLE_RELATION_NODE)) // retry
+							TABLE_RELATION_NODE)) // retry: 如果关系构建失败，可以重试
+			// 可行性评估后的路由：
+			// - 评估通过 → PLANNER_NODE（生成执行计划）
+			// - 评估不通过 → END
 			.addConditionalEdges(FEASIBILITY_ASSESSMENT_NODE, edge_async(new FeasibilityAssessmentDispatcher()),
 					Map.of(PLANNER_NODE, PLANNER_NODE, END, END))
 
-			// The edge from PlannerNode now goes to PlanExecutorNode for validation and
-			// execution
+			// 计划生成完成后，进入计划执行节点进行验证和路由
 			.addEdge(PLANNER_NODE, PLAN_EXECUTOR_NODE)
-			// python nodes
+			
+			// ==================== Python 执行链路 ====================
+			// Python 生成 → Python 执行（顺序执行）
 			.addEdge(PYTHON_GENERATE_NODE, PYTHON_EXECUTE_NODE)
+			// Python 执行后的路由：
+			// - 执行成功 → PYTHON_ANALYZE_NODE（分析结果）
+			// - 执行失败 → 重试 PYTHON_GENERATE_NODE 或 END
 			.addConditionalEdges(PYTHON_EXECUTE_NODE, edge_async(new PythonExecutorDispatcher(codeExecutorProperties)),
 					Map.of(PYTHON_ANALYZE_NODE, PYTHON_ANALYZE_NODE, END, END, PYTHON_GENERATE_NODE,
 							PYTHON_GENERATE_NODE))
+			// Python 分析完成后，回到计划执行节点，继续执行下一个步骤
 			.addEdge(PYTHON_ANALYZE_NODE, PLAN_EXECUTOR_NODE)
-			// The dispatcher at PlanExecutorNode will decide the next step
+			
+			// ==================== 计划执行节点的路由决策 ====================
+			// 计划执行节点根据当前步骤类型和状态，决定下一个执行的节点：
 			.addConditionalEdges(PLAN_EXECUTOR_NODE, edge_async(new PlanExecutorDispatcher()), Map.of(
-					// If validation fails, go back to PlannerNode to repair
+					// 计划验证失败 → 回到 PLANNER_NODE 重新生成计划
 					PLANNER_NODE, PLANNER_NODE,
-					// If validation passes, proceed to the correct execution node
-					SQL_GENERATE_NODE, SQL_GENERATE_NODE, PYTHON_GENERATE_NODE, PYTHON_GENERATE_NODE,
-					REPORT_GENERATOR_NODE, REPORT_GENERATOR_NODE,
-					// If human review is enabled, go to human_feedback node
+					// 计划验证通过，根据当前步骤类型路由到对应的执行节点
+					SQL_GENERATE_NODE, SQL_GENERATE_NODE,      // SQL 步骤
+					PYTHON_GENERATE_NODE, PYTHON_GENERATE_NODE, // Python 步骤
+					REPORT_GENERATOR_NODE, REPORT_GENERATOR_NODE, // 报告步骤
+					// 如果开启了人工审核，先进入人工反馈节点
 					HUMAN_FEEDBACK_NODE, HUMAN_FEEDBACK_NODE,
-					// If max repair attempts are reached, end the process
+					// 所有步骤执行完成或达到最大重试次数 → END
 					END, END))
-			// Human feedback node routing
+			
+			// ==================== 人工反馈节点的路由 ====================
+			// 人工反馈后的路由：
 			.addConditionalEdges(HUMAN_FEEDBACK_NODE, edge_async(new HumanFeedbackDispatcher()), Map.of(
-					// If plan is rejected, go back to PlannerNode
+					// 用户拒绝计划 → 回到 PLANNER_NODE 重新生成
 					PLANNER_NODE, PLANNER_NODE,
-					// If plan is approved, continue with execution
+					// 用户批准计划 → 继续执行 PLAN_EXECUTOR_NODE
 					PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE,
-					// If max repair attempts are reached, end the process
+					// 达到最大修复次数 → END
 					END, END))
+			
+			// 报告生成完成后，工作流结束
 			.addEdge(REPORT_GENERATOR_NODE, END)
-			// sql generate and sql execute node
+			
+			// ==================== SQL 执行链路（含语义一致性检查） ====================
+			// SQL 生成节点后的路由：
 			.addConditionalEdges(SQL_GENERATE_NODE, nodeBeanUtil.getEdgeBeanAsync(SqlGenerateDispatcher.class),
-					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, END, END, SEMANTIC_CONSISTENCY_NODE,
-							SEMANTIC_CONSISTENCY_NODE))
+					Map.of(
+							SQL_GENERATE_NODE, SQL_GENERATE_NODE, // SQL 生成失败，重试
+							END, END,                              // 达到最大重试次数，结束
+							SEMANTIC_CONSISTENCY_NODE, SEMANTIC_CONSISTENCY_NODE)) // SQL 生成成功，进入语义一致性检查
+			
+			// 语义一致性检查节点后的路由：
+			// 作用：验证生成的 SQL 是否与用户意图一致，检查是否存在幻觉字段、逻辑错误等
 			.addConditionalEdges(SEMANTIC_CONSISTENCY_NODE, edge_async(new SemanticConsistenceDispatcher()),
-					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, SQL_EXECUTE_NODE, SQL_EXECUTE_NODE))
+					Map.of(
+							// 语义检查不通过 → 回到 SQL_GENERATE_NODE 重新生成
+							SQL_GENERATE_NODE, SQL_GENERATE_NODE,
+							// 语义检查通过 → 进入 SQL_EXECUTE_NODE 执行 SQL
+							SQL_EXECUTE_NODE, SQL_EXECUTE_NODE))
+			
+			// SQL 执行节点后的路由：
 			.addConditionalEdges(SQL_EXECUTE_NODE, edge_async(new SQLExecutorDispatcher()),
-					Map.of(SQL_GENERATE_NODE, SQL_GENERATE_NODE, PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE));
+					Map.of(
+							// SQL 执行失败 → 回到 SQL_GENERATE_NODE 重新生成
+							SQL_GENERATE_NODE, SQL_GENERATE_NODE,
+							// SQL 执行成功 → 回到 PLAN_EXECUTOR_NODE 继续执行下一个步骤
+							PLAN_EXECUTOR_NODE, PLAN_EXECUTOR_NODE));
 
 		GraphRepresentation graphRepresentation = stateGraph.getGraph(GraphRepresentation.Type.PLANTUML,
 				"workflow graph");

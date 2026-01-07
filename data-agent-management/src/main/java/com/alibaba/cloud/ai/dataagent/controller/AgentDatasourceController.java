@@ -30,8 +30,17 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Agent Schema Initialization Controller Handles agent's database Schema initialization
- * to vector storage
+ * 智能体-数据源绑定与 Schema 初始化接口。
+ *
+ * <p>
+ * 这部分把“智能体（agent）”与“数据源（datasource）”关联起来，并提供把 Schema/表结构写入向量库的能力：
+ * - 选择当前 agent 使用哪个 datasource（以及选哪些表）
+ * - 将选中表的 schema 信息初始化到向量存储（用于后续 schema recall / NL2SQL）
+ * </p>
+ *
+ * <p>
+ * 前端对应场景：Agent 配置页里“选择数据源/选择表/初始化信息源（向量化 schema）”等功能。
+ * </p>
  */
 @Slf4j
 @RestController
@@ -43,8 +52,11 @@ public class AgentDatasourceController {
 	private final AgentDatasourceService agentDatasourceService;
 
 	/**
-	 * Initialize agent's database Schema to vector storage Corresponds to the "Initialize
-	 * Information Source" function on the frontend
+	 * 初始化（向量化）Schema：把 agent 当前选择的数据源、表结构写入向量库。
+	 *
+	 * <p>
+	 * 这样后续 {@code SchemaRecallNode} 才能通过检索找到相关表/字段信息，为 SQL 生成提供上下文。
+	 * </p>
 	 */
 	@PostMapping("/init")
 	public ResponseEntity<ApiResponse> initSchema(@PathVariable(value = "agentId") Long agentId) {
@@ -91,6 +103,7 @@ public class AgentDatasourceController {
 	public ResponseEntity<ApiResponse> getAgentDatasource(@PathVariable(value = "agentId") Long agentId) {
 		try {
 			log.info("Getting datasources for agent: {}", agentId);
+			// 返回该 agent 绑定的数据源列表（可能包含历史绑定），用于配置页展示
 			List<AgentDatasource> datasources = agentDatasourceService.getAgentDatasource(Math.toIntExact(agentId));
 			log.info("Successfully retrieved {} datasources for agent: {}", datasources.size(), agentId);
 			return ResponseEntity.ok(ApiResponse.success("操作成功", datasources));
@@ -105,6 +118,7 @@ public class AgentDatasourceController {
 	public ResponseEntity<ApiResponse> getActiveAgentDatasource(@PathVariable(value = "agentId") Long agentId) {
 		try {
 			log.info("Getting active datasource for agent: {}", agentId);
+			// 返回当前生效的数据源（运行时通常使用它来查询 schema / 执行 SQL）
 			AgentDatasource datasource = agentDatasourceService.getCurrentAgentDatasource(Math.toIntExact(agentId));
 			return ResponseEntity.ok(ApiResponse.success("操作成功", datasource));
 		}
@@ -138,6 +152,7 @@ public class AgentDatasourceController {
 	public ResponseEntity<ApiResponse> updateDatasourceTables(@PathVariable("agentId") String agentId,
 			@RequestBody @Validated UpdateDatasourceTablesDTO dto) {
 		try {
+			// 前端“选择表”配置：决定初始化 schema / SQL 生成时可用的表范围
 			dto.setTables(Optional.ofNullable(dto.getTables()).orElse(List.of()));
 			agentDatasourceService.updateDatasourceTables(Integer.parseInt(agentId), dto.getDatasourceId(),
 					dto.getTables());

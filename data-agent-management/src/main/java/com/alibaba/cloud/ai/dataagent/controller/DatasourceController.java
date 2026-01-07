@@ -30,6 +30,20 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * 数据源（Datasource）管理接口。
+ *
+ * <p>
+ * 这部分负责管理“业务数据库连接”及其元数据扩展能力（如逻辑外键），为 NL2SQL 工作流提供 Schema 上下文：
+ * - 数据源 CRUD / 连接测试
+ * - 表列表/字段列表查询
+ * - 逻辑外键（LogicalRelation）：当真实库缺少外键约束时，手工补充表关系，用于更准确的 Join 推理
+ * </p>
+ *
+ * <p>
+ * 与运行时的关系：SQL 生成与语义一致性校验会依赖 Schema/表关系信息（见 SchemaRecallNode/TableRelationNode 等）。
+ * </p>
+ */
 // todo: 不要吞掉所有异常，可以直接抛出，写一个Advice拦截异常并做日志
 @Slf4j
 @RestController
@@ -80,6 +94,7 @@ public class DatasourceController {
 	@GetMapping("/{id}/tables")
 	public ResponseEntity<List<String>> getDatasourceTables(@PathVariable(value = "id") Integer id) {
 		try {
+			// 从真实数据库拉取该数据源下的表清单（用于前端“选择表”）
 			List<String> tables = datasourceService.getDatasourceTables(id);
 			return ResponseEntity.ok(tables);
 		}
@@ -153,6 +168,7 @@ public class DatasourceController {
 	public ApiResponse<List<String>> getTableColumns(@PathVariable(value = "id") Integer id,
 			@PathVariable(value = "tableName") String tableName) {
 		try {
+			// 用于前端配置/调试，也可为 schema 召回/语义模型配置提供字段候选
 			List<String> columns = datasourceService.getTableColumns(id, tableName);
 			return ApiResponse.success("获取字段列表成功", columns);
 		}
@@ -250,6 +266,7 @@ public class DatasourceController {
 	public ApiResponse<List<LogicalRelation>> saveLogicalRelations(@PathVariable(value = "id") Integer datasourceId,
 			@RequestBody List<LogicalRelation> logicalRelations) {
 		try {
+			// 典型用于前端“表关系维护”页：一次保存整套关系配置，避免增删改多次调用
 			List<LogicalRelation> saved = datasourceService.saveLogicalRelations(datasourceId, logicalRelations);
 			return ApiResponse.success("success save logical relations", saved);
 		}

@@ -37,7 +37,17 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * Agent Management Controller
+ * 智能体（Agent）管理接口。
+ *
+ * <p>
+ * Agent 是 DataAgent 的“运行配置单元”，典型包含：提示词、分类、状态、关联数据源、API Key 开关等。
+ * 前端的 Agent 列表/详情页/发布下线/Key 管理，都通过本 Controller 调用。
+ * </p>
+ *
+ * <p>
+ * 与运行时的关系：Graph 执行时会传入 agentId（见 {@link GraphController}），后端会按 agent 维度加载配置，
+ * 如：数据源、提示词优化配置、知识库召回策略、模型配置等。
+ * </p>
  */
 @Slf4j
 @RestController
@@ -49,7 +59,7 @@ public class AgentController {
 	private final AgentService agentService;
 
 	/**
-	 * Get agent list
+	 * 获取智能体列表（可按状态/关键词过滤）。
 	 */
 	@GetMapping("/list")
 	public ResponseEntity<List<Agent>> list(@RequestParam(value = "status", required = false) String status,
@@ -118,7 +128,11 @@ public class AgentController {
 	}
 
 	/**
-	 * Publish agent
+	 * 发布智能体（状态变为 published）。
+	 *
+	 * <p>
+	 * 通常表示可以在运行页面被选择并执行（具体约束由前端/服务层决定）。
+	 * </p>
 	 */
 	@PostMapping("/{id}/publish")
 	public ResponseEntity<Agent> publish(@PathVariable(value = "id") Long id) {
@@ -132,7 +146,7 @@ public class AgentController {
 	}
 
 	/**
-	 * Offline agent
+	 * 下线智能体（状态变为 offline）。
 	 */
 	@PostMapping("/{id}/offline")
 	public ResponseEntity<Agent> offline(@PathVariable(value = "id") Long id) {
@@ -146,7 +160,11 @@ public class AgentController {
 	}
 
 	/**
-	 * Get masked API Key status
+	 * 获取 API Key 的脱敏展示与启用状态。
+	 *
+	 * <p>
+	 * 用于前端“接入 API”页面展示：是否启用、以及脱敏后的 key（避免泄露）。
+	 * </p>
 	 */
 	@GetMapping("/{id}/api-key")
 	public ResponseEntity<ApiResponse<ApiKeyResponse>> getApiKey(@PathVariable("id") Long id) {
@@ -198,7 +216,11 @@ public class AgentController {
 	}
 
 	/**
-	 * Toggle API Key enable flag
+	 * 启用/禁用 API Key 校验开关。
+	 *
+	 * <p>
+	 * enabled=true：表示外部调用 API 时需要带正确 key（由 filter/interceptor 等实现校验，非本 Controller 负责）。
+	 * </p>
 	 */
 	@PostMapping("/{id}/api-key/enable")
 	public ResponseEntity<ApiResponse<ApiKeyResponse>> toggleApiKey(@PathVariable("id") Long id,

@@ -28,7 +28,36 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * Semantic Model Configuration Controller
+ * 语义模型配置管理 Controller
+ * 
+ * <p><b>职责边界</b>：
+ * 管理业务语义模型（Semantic Model），用于将业务术语映射到数据库表字段，
+ * 帮助 NL2SQL 节点更准确地理解用户的自然语言查询。
+ * 
+ * <p><b>核心概念</b>：
+ * - <b>语义模型（SemanticModel）</b>：定义业务术语与数据库字段的映射关系
+ *   例如："销售额" → "orders.total_amount"、"用户数" → "COUNT(DISTINCT users.id)"
+ * - <b>智能体级别（agentId）</b>：每个智能体可以有自己的语义模型配置
+ * - <b>启用状态（isActive）</b>：只有启用的语义模型才会在 SQL 生成时被使用
+ * 
+ * <p><b>典型使用场景</b>：
+ * 1. 用户查询"最近一个月的销售额" → 系统通过语义模型知道"销售额"对应 orders.total_amount
+ * 2. 用户查询"活跃用户数" → 系统通过语义模型知道需要 COUNT(DISTINCT users.id) 并加上活跃条件
+ * 3. 不同行业的智能体使用不同的业务术语 → 为每个智能体配置独立的语义模型
+ * 
+ * <p><b>与其他模块的关系</b>：
+ * - 被 {@code TableRelationNode} 读取并构建为语义模型 Prompt，存储到 state 的 {@code GENEGRATED_SEMANTIC_MODEL_PROMPT} 中
+ * - 被 {@code PlannerNode} 在生成计划时使用（从 state 读取并注入到计划生成的 Prompt 中）
+ * - 通过计划中的执行描述，间接影响 {@code SqlGenerateNode} 的 SQL 生成
+ * - 配置的启用/禁用会实时影响计划生成的准确性
+ * 
+ * <p><b>主要端点</b>：
+ * - GET /?agentId={agentId}：查询指定智能体的语义模型列表
+ * - POST /：创建新的语义模型
+ * - PUT /{id}：更新语义模型
+ * - PUT /enable、/disable：批量启用/禁用语义模型
+ * 
+ * @author Makoto
  */
 @Slf4j
 @RestController
@@ -39,6 +68,20 @@ public class SemanticModelController {
 
 	private final SemanticModelService semanticModelService;
 
+	/**
+	 * 查询语义模型列表
+	 * 
+	 * <p><b>用途</b>：前端在"语义模型管理"页面展示列表时调用。
+	 * 
+	 * <p><b>查询逻辑</b>：
+	 * - 如果提供 {@code keyword}，按关键词搜索（模糊匹配名称、描述等）
+	 * - 如果提供 {@code agentId}，返回该智能体的所有语义模型
+	 * - 如果都不提供，返回所有语义模型
+	 * 
+	 * @param keyword 搜索关键词（可选）
+	 * @param agentId 智能体ID（可选）
+	 * @return 语义模型列表
+	 */
 	@GetMapping
 	public ApiResponse<List<SemanticModel>> list(@RequestParam(value = "keyword", required = false) String keyword,
 			@RequestParam(value = "agentId", required = false) Long agentId) {
@@ -61,6 +104,23 @@ public class SemanticModelController {
 		return ApiResponse.success("success retrieve semanticModel", model);
 	}
 
+	/**
+	 * 创建语义模型
+	 * 
+	 * <p><b>用途</b>：用户在前端添加新的业务术语映射时调用。
+	 * 
+	 * <p><b>关键参数</b>：
+	 * - {@code semanticModelAddDto.agentId}：所属智能体ID
+	 * - {@code semanticModelAddDto.termName}：业务术语（如"销售额"）
+	 * - {@code semanticModelAddDto.fieldMapping}：对应的数据库字段或表达式（如"orders.total_amount"）
+	 * - {@code semanticModelAddDto.description}：说明（可选）
+	 * 
+	 * <p><b>副作用</b>：
+	 * - 创建后，如果启用，下次 SQL 生成时会立即生效
+	 * 
+	 * @param semanticModelAddDto 语义模型数据
+	 * @return 创建结果
+	 */
 	@PostMapping
 	public ApiResponse<Boolean> create(@RequestBody @Validated SemanticModelAddDTO semanticModelAddDto) {
 		boolean success = semanticModelService.addSemanticModel(semanticModelAddDto);
@@ -91,7 +151,18 @@ public class SemanticModelController {
 		return ApiResponse.success("Semantic model deleted successfully", true);
 	}
 
-	// Enable
+	/**
+	 * 批量启用语义模型
+	 * 
+	 * <p><b>用途</b>：用户在前端勾选多个语义模型并点击"启用"时调用。
+	 * 
+	 * <p><b>副作用</b>：
+	 * - 启用后，这些语义模型会在下次 SQL 生成时被注入到 Prompt 中
+	 * - 帮助 LLM 更准确地理解用户的业务术语
+	 * 
+	 * @param ids 语义模型ID列表
+	 * @return 操作结果
+	 */
 	@PutMapping("/enable")
 	public ApiResponse<Boolean> enableFields(@RequestBody @NotEmpty(message = "ID列表不能为空") List<Long> ids) {
 		semanticModelService.enableSemanticModels(ids);
